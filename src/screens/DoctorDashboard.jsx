@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useReviewContext } from '../state/ReviewContext';
 
@@ -10,28 +10,39 @@ const statusClass = (status) => {
 
 export default function DoctorDashboard() {
   const navigate = useNavigate();
-  const { activeDoctorId, setActiveDoctorId, getReviewByDoctor, scanId, assignedDoctors, loggedDoctorId } = useReviewContext();
-  const effectiveDoctorId = loggedDoctorId || activeDoctorId;
-  const review = getReviewByDoctor(effectiveDoctorId);
-  const isAssigned = assignedDoctors.some((d) => d.id === effectiveDoctorId);
-  const displayDoctor = assignedDoctors.find((d) => d.id === effectiveDoctorId);
+  const { auth, logout, getCurrentScanId, getMyReviews } = useReviewContext();
+  const scanId = getCurrentScanId();
+  const displayDoctor = auth.userId ? `(${auth.userId})` : null;
+
+  const [reviewStatus, setReviewStatus] = useState('Not Started');
 
   useEffect(() => {
-    if (loggedDoctorId && assignedDoctors.some((d) => d.id === loggedDoctorId)) {
-      setActiveDoctorId(loggedDoctorId);
+    if (auth.role !== 'DOCTOR' || !auth.userId) {
+      navigate('/login', { replace: true });
       return;
     }
-    if (assignedDoctors.length && !assignedDoctors.find(d => d.id === effectiveDoctorId)) {
-      setActiveDoctorId(assignedDoctors[0].id);
-    }
-  }, [assignedDoctors, effectiveDoctorId, setActiveDoctorId, loggedDoctorId]);
+    getMyReviews()
+      .then((reviews) => {
+        const r = (reviews || []).find((x) => x.scanId === scanId);
+        if (!r) setReviewStatus('Not Started');
+        else if (r.status === 'LOCKED') setReviewStatus('Locked');
+        else if (r.status === 'SUBMITTED') setReviewStatus('Submitted');
+        else setReviewStatus('Draft');
+      })
+      .catch((err) => {
+        if (err?.status === 401) {
+          logout();
+          navigate('/login', { replace: true });
+        }
+      });
+  }, [auth.role, auth.userId, getMyReviews, navigate, logout, scanId]);
 
   const handleOpen = () => {
     sessionStorage.setItem('currentScanId', scanId);
-    sessionStorage.setItem('currentStatus', review.status);
     navigate('/doctor/review');
   };
   const handleLogout = () => {
+    logout();
     navigate('/login');
   };
 
@@ -42,7 +53,7 @@ export default function DoctorDashboard() {
           <div>
             <h1>My Reviews</h1>
             <p className="muted">Independent clinical assessments</p>
-            {displayDoctor && <p className="muted">Signed in as {displayDoctor.name}</p>}
+            {displayDoctor && <p className="muted">Signed in as {displayDoctor}</p>}
           </div>
           <button className="btn btn-ghost" onClick={handleLogout}>Logout</button>
         </div>
@@ -62,16 +73,14 @@ export default function DoctorDashboard() {
             <tbody>
               <tr>
                 <td>{scanId}</td>
-                <td><span className={statusClass(review.status)}>{review.status}</span></td>
-                <td>{review.status === 'Draft' ? <span className="badge badge-warn">Resume draft</span> : '—'}</td>
+                <td><span className={statusClass(reviewStatus)}>{reviewStatus}</span></td>
+                <td>{reviewStatus === 'Draft' ? <span className="badge badge-warn">Resume draft</span> : '—'}</td>
                 <td>
-                  {!isAssigned ? (
-                    <span className="muted">Not assigned</span>
-                  ) : review.status === 'Locked' ? (
-                    <span className="muted">Locked</span>
+                  {reviewStatus === 'Locked' || reviewStatus === 'Submitted' ? (
+                    <span className="muted">{reviewStatus}</span>
                   ) : (
                     <button className="btn btn-primary" onClick={handleOpen}>
-                      {review.status === 'Draft' ? 'Continue' : 'Start Review'}
+                      {reviewStatus === 'Draft' ? 'Continue' : 'Start Review'}
                     </button>
                   )}
                 </td>

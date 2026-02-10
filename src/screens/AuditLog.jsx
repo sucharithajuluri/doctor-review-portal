@@ -1,20 +1,67 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useReviewContext } from '../state/ReviewContext';
 
 const actionOptions = [
   'Scan Ingested',
-  'Scan Assigned',
   'Draft Saved',
   'Review Submitted',
   'AI Executed',
-  'Final Result Locked',
+  'Final Result Generated',
 ];
 
 export default function AuditLog() {
-  const { auditLogs } = useReviewContext();
+  const navigate = useNavigate();
+  const { auth, logout, getCurrentScanId, getAdminAudit } = useReviewContext();
+  const scanId = getCurrentScanId();
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [pageError, setPageError] = useState('');
   const [filterActor, setFilterActor] = useState('all');
   const [filterAction, setFilterAction] = useState('all');
   const [preset, setPreset] = useState('all');
+
+  useEffect(() => {
+    if (auth.role !== 'ADMIN') {
+      navigate('/login', { replace: true });
+    }
+  }, [auth.role, navigate]);
+
+  useEffect(() => {
+    if (auth.role !== 'ADMIN') return;
+    setPageError('');
+    getAdminAudit(scanId)
+      .then((rows) => {
+        const mapped = (rows || []).map((l) => {
+          let actor = 'System';
+          if (l.actorRole === 'DOCTOR') {
+            if (l.actorId === 'DOCTOR-1') actor = 'Doctor 1';
+            else if (l.actorId === 'DOCTOR-2') actor = 'Doctor 2';
+            else if (l.actorId === 'DOCTOR-3') actor = 'Doctor 3';
+            else actor = `Doctor ${l.actorId}`;
+          }
+          if (l.actorRole === 'SYSTEM') actor = 'System';
+          return {
+            timestamp: l.timestamp,
+            actor,
+            action: l.action,
+            scanId: l.scanId,
+          };
+        });
+        setAuditLogs(mapped);
+      })
+      .catch((err) => {
+        if (err?.status === 401) {
+          logout();
+          navigate('/login', { replace: true });
+          return;
+        }
+        if (err?.status === 403) {
+          setPageError('Access denied.');
+          return;
+        }
+        setPageError('Unable to load audit log.');
+      });
+  }, [auth.role, getAdminAudit, logout, navigate, scanId]);
 
   const filtered = useMemo(() => {
     let list = auditLogs;
@@ -32,11 +79,10 @@ export default function AuditLog() {
   const colorForAction = (action) => {
     switch (action) {
       case 'Scan Ingested': return 'badge badge-info';
-      case 'Scan Assigned': return 'badge badge-info';
       case 'Draft Saved': return 'badge badge-warn';
       case 'Review Submitted': return 'badge badge-success';
       case 'AI Executed': return 'badge badge-muted';
-      case 'Final Result Locked': return 'badge badge-success';
+      case 'Final Result Generated': return 'badge badge-success';
       default: return 'badge badge-muted';
     }
   };
@@ -56,6 +102,11 @@ export default function AuditLog() {
       </header>
 
       <main className="content">
+        {pageError && (
+          <div className="warn" style={{ marginBottom: 16, borderRadius: 12 }}>
+            {pageError}
+          </div>
+        )}
         <div className="card" style={{ marginBottom: 16 }}>
           <div className="row" style={{ gap: 16, alignItems: 'flex-end', flexWrap: 'wrap' }}>
             <div className="form-field">

@@ -7,23 +7,26 @@ export default function DoctorLogin() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const navigate = useNavigate();
-  const { setActiveDoctorId, setLoggedDoctorId, authenticate } = useReviewContext();
+  const { login } = useReviewContext();
 
   const handleLogin = (e) => {
     e.preventDefault();
     setError('');
-    const auth = authenticate(username, password);
-    if (!auth) {
-      setError('Invalid credentials or not assigned.');
-      return;
-    }
-    if (auth.role === 'admin') {
-      navigate('/admin/dashboard');
-    } else {
-      setActiveDoctorId(auth.doctorId);
-      setLoggedDoctorId(auth.doctorId);
-      navigate('/doctor/dashboard');
-    }
+    login(username, password)
+      .then((auth) => {
+        if (!auth) {
+          setError('Invalid credentials.');
+          return;
+        }
+        if (auth.role === 'ADMIN') navigate('/admin/dashboard');
+        else navigate('/doctor/dashboard');
+      })
+      .catch((err) => {
+        if (err?.status === 403) setError('Access denied.');
+        else if (err?.status === 503) setError('Service unavailable.');
+        else if (err?.status === 0) setError('Cannot reach server.');
+        else setError('Invalid credentials.');
+      });
   };
 
   return (
@@ -67,7 +70,7 @@ export default function DoctorLogin() {
           </button>
         </form>
         <div style={{ marginTop: 18, paddingTop: 18, borderTop: `1px solid #e2e8f0`, textAlign: 'center' }}>
-          <p className="muted">Demo creds: doctor1@example.com / pass1 (doctor2/3 likewise). Admin: admin@demo.com / admin123.</p>
+          <p className="muted">Use backend users (e.g. doctor1@example.com / password, admin@example.com / password).</p>
         </div>
       </div>
     </div>

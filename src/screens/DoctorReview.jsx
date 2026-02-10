@@ -5,41 +5,100 @@ import { useReviewContext } from '../state/ReviewContext';
 export default function DoctorReview() {
   const navigate = useNavigate();
   const {
-    activeDoctorId,
-    setActiveDoctorId,
-    scanId,
-    getReviewByDoctor,
+    auth,
     saveDraft,
     submitReview,
-    assignedDoctors,
-    loggedDoctorId,
+    logout,
+    getCurrentScanId,
+    getMyReviews,
+    getScan,
+    fromApiConfidence,
   } = useReviewContext();
-  const effectiveDoctorId = loggedDoctorId || activeDoctorId;
-  const review = getReviewByDoctor(effectiveDoctorId);
-  const isAssigned = assignedDoctors.some((d) => d.id === effectiveDoctorId);
-  const [condition, setCondition] = useState(review.condition);
-  const [confidence, setConfidence] = useState(review.confidence);
-  const [notes, setNotes] = useState(review.notes);
+
+  const scanId = getCurrentScanId();
+  const [imageUrl, setImageUrl] = useState('');
+  const [imgError, setImgError] = useState(false);
+  const [imgLoading, setImgLoading] = useState(false);
+  const [review, setReview] = useState(null);
+  const [condition, setCondition] = useState('');
+  const [confidence, setConfidence] = useState('');
+  const [notes, setNotes] = useState('');
   const [errors, setErrors] = useState({});
-  const isLocked = review.status === 'Locked';
-  const lockedAt = review.updatedAt;
+  const isDraft = !review || review?.status === 'DRAFT';
+  const isSubmitted = review?.status === 'SUBMITTED';
+  const isLocked = review?.status === 'LOCKED';
+  const isReadOnly = !isDraft;
+  const submittedAt = review?.submittedAt || null;
+  const lockedAt = review?.lockedAt || null;
+  const [pageError, setPageError] = useState('');
+  const mixedContentBlocked =
+    window.location.protocol === 'https:' &&
+    typeof imageUrl === 'string' &&
+    imageUrl.startsWith('http:');
 
   useEffect(() => {
-    if (!isAssigned) {
-      alert('You are not assigned to this scan. Contact admin.');
-      navigate('/doctor/dashboard');
+    if (auth.role !== 'DOCTOR' || !auth.userId) {
+      navigate('/login', { replace: true });
       return;
     }
-    const r = getReviewByDoctor(effectiveDoctorId);
-    setCondition(r.condition);
-    setConfidence(r.confidence);
-    setNotes(r.notes);
-  }, [effectiveDoctorId, getReviewByDoctor, isAssigned, navigate]);
+
+    setPageError('');
+    Promise.all([
+      getScan(scanId),
+      getMyReviews(),
+    ])
+      .then(([scan, reviews]) => {
+        setImageUrl(scan?.imageUrl || '');
+        setImgError(false);
+        setImgLoading(Boolean(scan?.imageUrl));
+        const r = (reviews || []).find((x) => x.scanId === scanId) || null;
+        setReview(r);
+        setCondition(r?.conditionTier1 || '');
+        setConfidence(fromApiConfidence(r?.confidenceLevel) || '');
+        setNotes(r?.notes || '');
+      })
+      .catch((err) => {
+        if (err?.status === 401) {
+          logout();
+          navigate('/login', { replace: true });
+          return;
+        }
+        if (err?.status === 403) {
+          setPageError('Access denied.');
+          return;
+        }
+        setPageError('Unable to load review.');
+      });
+  }, [auth.role, auth.userId, fromApiConfidence, getMyReviews, getScan, logout, navigate, scanId]);
+
+  useEffect(() => {
+    if (imageUrl) {
+      // Debug: verify imageUrl is used exactly as returned by backend
+      // eslint-disable-next-line no-console
+      console.log('[DoctorReview] imageUrl:', imageUrl);
+    }
+  }, [imageUrl]);
 
   const handleSaveDraft = () => {
-    saveDraft({ doctorId: activeDoctorId, condition, confidence, notes });
-    sessionStorage.setItem('currentStatus', 'Draft');
-    alert('Draft saved');
+    setErrors({});
+    setPageError('');
+    saveDraft({ scanId, condition, confidence, notes })
+      .then((r) => {
+        setReview(r);
+        alert('Draft saved');
+      })
+      .catch((err) => {
+        if (err?.status === 401) {
+          logout();
+          navigate('/login', { replace: true });
+          return;
+        }
+        if (err?.status === 403) {
+          setPageError('Access denied.');
+          return;
+        }
+        setPageError('Unable to save draft.');
+      });
   };
 
   const handleSubmit = (e) => {
@@ -49,13 +108,34 @@ export default function DoctorReview() {
     if (!confidence) nextErrors.confidence = 'Confidence is required';
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) return;
-    submitReview({ doctorId: activeDoctorId, condition, confidence, notes });
-    sessionStorage.setItem('currentStatus', 'Locked');
-    sessionStorage.setItem('lockedAt', new Date().toISOString());
-    navigate('/doctor/confirmation');
+
+    setPageError('');
+    saveDraft({ scanId, condition, confidence, notes })
+      .then(() => submitReview({ scanId }))
+      .then((r) => {
+        setReview(r);
+        sessionStorage.setItem('submittedAt', r?.submittedAt || new Date().toISOString());
+        if (r?.lockedAt) sessionStorage.setItem('lockedAt', r.lockedAt);
+        navigate('/doctor/confirmation');
+      })
+      .catch((err) => {
+        if (err?.status === 401) {
+          logout();
+          navigate('/login', { replace: true });
+          return;
+        }
+        if (err?.status === 403) {
+          setPageError('Access denied.');
+          return;
+        }
+        setPageError('Unable to submit review.');
+      });
   };
 
   const handleCancel = () => navigate('/doctor/dashboard');
+
+  const fallbackSrc = `${import.meta.env.BASE_URL}face.svg`;
+  const faceSrc = mixedContentBlocked ? fallbackSrc : (imageUrl || fallbackSrc);
 
   return (
     <div className="page">
@@ -64,23 +144,25 @@ export default function DoctorReview() {
           <div>
             <h1>Clinical Review</h1>
             <p className="muted">Independent blinded assessment</p>
-            <p className="muted">Status: {isLocked ? 'Submitted (Locked)' : 'Draft (Editable)'}</p>
+            <p className="muted">
+              Status: {isLocked ? 'Locked' : (isSubmitted ? 'Submitted (Final)' : 'Draft (Editable)')}
+            </p>
           </div>
-          <select
-            className="select"
-            value={effectiveDoctorId}
-            onChange={(e) => setActiveDoctorId(e.target.value)}
-            style={{ width: 160 }}
-            disabled
-          >
-            {(loggedDoctorId ? assignedDoctors.filter(d => d.id === loggedDoctorId) : assignedDoctors).map((doc) => (
-              <option key={doc.id} value={doc.id}>{doc.name}</option>
-            ))}
-          </select>
         </div>
       </header>
 
       <main className="content">
+        {pageError && (
+          <div className="warn" style={{ marginBottom: 16, borderRadius: 12 }}>
+            {pageError}
+          </div>
+        )}
+        {isSubmitted && (
+          <div className="warn" style={{ marginBottom: 16, borderRadius: 12 }}>
+            This review is submitted and cannot be edited.
+            {submittedAt && <div className="muted">Submitted by you at {new Date(submittedAt).toLocaleString()}</div>}
+          </div>
+        )}
         {isLocked && (
           <div className="warn" style={{ marginBottom: 16, borderRadius: 12 }}>
             This review is locked and cannot be edited.
@@ -104,10 +186,24 @@ export default function DoctorReview() {
               </div>
             </div>
             <div className="image-box">
-              <img src="https://images.unsplash.com/photo-1717068341198-95cce0b54b26?auto=format&fit=crop&w=900&q=80" alt="Face scan" />
+              <img
+                src={faceSrc}
+                alt="Face Image"
+                onLoad={() => setImgLoading(false)}
+                onError={() => {
+                  setImgLoading(false);
+                  setImgError(true);
+                }}
+              />
             </div>
             <div style={{ marginTop: 10, textAlign: 'center' }}>
               <p className="muted">Read-only image from external system</p>
+              {(mixedContentBlocked || imgError) && (
+                <p className="muted" style={{ color: '#ef4444', fontWeight: 700 }}>
+                  Image unavailable from external server
+                </p>
+              )}
+              {imgLoading && <p className="muted">Loading image…</p>}
             </div>
           </div>
 
@@ -124,7 +220,7 @@ export default function DoctorReview() {
                   className="select"
                   value={condition}
                   onChange={(e) => setCondition(e.target.value)}
-                  disabled={isLocked}
+                  disabled={isReadOnly}
                   required
                 >
                   <option value="">Select condition...</option>
@@ -150,7 +246,7 @@ export default function DoctorReview() {
                         value={level}
                         checked={confidence === level}
                         onChange={(e) => setConfidence(e.target.value)}
-                        disabled={isLocked}
+                        disabled={isReadOnly}
                         required
                       />
                       <span>{level}</span>
@@ -168,23 +264,23 @@ export default function DoctorReview() {
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                   placeholder="Additional clinical observations..."
-                  disabled={isLocked}
+                  disabled={isReadOnly}
                 />
                 <p className="muted">Optional</p>
               </div>
 
               <div className="warn" style={{ padding: 12, borderRadius: 12 }}>
-                Once submitted, this review will be locked
+                Once submitted, this review is final and cannot be changed.
               </div>
 
-              {!isLocked ? (
+              {isDraft ? (
                 <div className="row">
                   <button type="button" className="btn" onClick={handleSaveDraft}>Save Draft</button>
                   <button type="submit" className="btn btn-primary">Submit Review</button>
                   <button type="button" className="btn btn-ghost" onClick={handleCancel}>Cancel</button>
                 </div>
               ) : (
-                <div className="lock-note">Review is LOCKED (read-only)</div>
+                <div className="lock-note">Review is read-only</div>
               )}
             </form>
           </div>

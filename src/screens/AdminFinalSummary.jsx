@@ -1,25 +1,63 @@
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useReviewContext } from '../state/ReviewContext';
 
 export default function AdminFinalSummary() {
-  const { scanId, reviews, aiResult, finalResult, assignedDoctors } = useReviewContext();
-  const assignedReviews = assignedDoctors.map((doc) => reviews.find((r) => r.doctorId === doc.id) || {
-    doctorId: doc.id,
-    condition: '',
-    confidence: '',
-    notes: '',
-    status: 'Not Started',
-    updatedAt: null,
-  });
+  const { auth, logout, getCurrentScanId, getAdminFinal, fromApiConfidence } = useReviewContext();
+  const navigate = useNavigate();
+  const scanId = getCurrentScanId();
+  const [data, setData] = useState(null);
+  const [pageError, setPageError] = useState('');
 
-  const agreementSummary = (() => {
-    const filled = assignedReviews.filter((r) => r.condition).map((r) => r.condition);
-    if (filled.length < assignedReviews.length) return 'Pending doctor submissions.';
-    const unique = new Set(filled).size;
-    if (unique === 1) return 'All doctors independently identified the same condition.';
-    if (unique === 2) return 'Partial agreement among doctors.';
-    return 'No agreement between doctors.';
-  })();
-  const lockedCount = assignedReviews.filter((r) => r.status === 'Locked').length;
+  const scan = data?.scan || null;
+  const reviews = data?.reviews || [];
+  const ai = data?.ai || null;
+  const final = data?.final || null;
+  const isComplete = Boolean(data?.isComplete);
+  const reviewCompletion = data?.reviewCompletion || `${(reviews || []).filter((r) => r.status === 'LOCKED').length}/3`;
+
+  const lockedCount = (reviews || []).filter((r) => r.status === 'LOCKED').length;
+  const backendBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
+
+  const getImageSrc = (scanId) => {
+    if (!scanId) return null;
+    return `${backendBase}/system/image/${encodeURIComponent(scanId)}`;
+  };
+
+  useEffect(() => {
+    if (auth.role !== 'ADMIN') {
+      navigate('/login', { replace: true });
+    }
+  }, [auth.role, navigate]);
+
+  useEffect(() => {
+    if (auth.role !== 'ADMIN') return;
+    setPageError('');
+    getAdminFinal(scanId)
+      .then((res) => {
+        setData(res);
+      })
+      .catch((err) => {
+        if (err?.status === 401) {
+          logout();
+          navigate('/login', { replace: true });
+          return;
+        }
+        if (err?.status === 403) {
+          setPageError('Access denied.');
+          return;
+        }
+        setPageError('Unable to load final summary.');
+      });
+  }, [auth.role, getAdminFinal, logout, navigate, scanId]);
+
+  useEffect(() => {
+    // Validation logging: ensure correct scanId usage
+    // eslint-disable-next-line no-console
+    console.log('ADMIN scanId:', scanId);
+    // eslint-disable-next-line no-console
+    console.log('ADMIN image src:', getImageSrc(scanId));
+  }, [scanId]);
 
   return (
     <div className="page">
@@ -36,17 +74,37 @@ export default function AdminFinalSummary() {
       </header>
 
       <main className="content">
+        {pageError && (
+          <div className="warn" style={{ marginBottom: 16, borderRadius: 12 }}>
+            {pageError}
+          </div>
+        )}
         <div className="card" style={{ marginBottom: 12, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-          <div className="pill">Assigned: {assignedReviews.length}</div>
-          <div className="pill">Locked: {lockedCount}/{assignedReviews.length}</div>
-          <div className="pill">AI: {aiResult ? 'Completed' : 'Pending'}</div>
-          <div className="pill">Final: {finalResult || 'Pending'}</div>
+          <div className="pill">Assigned: 3</div>
+          <div className="pill">Locked: {reviewCompletion}</div>
+          <div className="pill">AI: {isComplete && ai ? 'Completed' : 'Pending'}</div>
+          <div className="pill">Final: {isComplete ? (final?.result || 'Pending') : 'Pending'}</div>
         </div>
+        {!isComplete && (
+          <div className="warn" style={{ marginBottom: 18, borderRadius: 12, padding: 12 }}>
+            Reviews in progress — results available after completion.
+          </div>
+        )}
         <div className="card" style={{ marginBottom: 18 }}>
           <h2 style={{ marginBottom: 12 }}>Face Image</h2>
           <div style={{ maxWidth: 380, margin: '0 auto' }}>
             <div className="image-box">
-              <img src="https://images.unsplash.com/photo-1717068341198-95cce0b54b26?auto=format&fit=crop&w=900&q=80" alt="Face scan" />
+              {getImageSrc(scanId) ? (
+                <img
+                  src={getImageSrc(scanId)}
+                  alt="Face Image"
+                  style={{ maxWidth: '100%', border: '1px solid #ccc' }}
+                />
+              ) : (
+                <div className="muted" style={{ color: '#ef4444', fontWeight: 700 }}>
+                  Image unavailable (missing scanId)
+                </div>
+              )}
             </div>
             <div className="center" style={{ marginTop: 10 }}>
               <p className="muted">Read-only image from external system</p>
@@ -54,65 +112,73 @@ export default function AdminFinalSummary() {
           </div>
         </div>
 
-        <div className="stack" style={{ marginBottom: 18 }}>
-          <h2>Doctor Review Decisions</h2>
-          {assignedReviews.map((review) => (
-            <div key={review.doctorId} className="card">
-              <h3 style={{ color: '#4f46e5', marginBottom: 12 }}>Doctor {review.doctorId}</h3>
+        {isComplete && (
+          <div className="stack" style={{ marginBottom: 18 }}>
+            <h2>Doctor Review Decisions</h2>
+            {(reviews || []).map((review) => (
+              <div key={review.reviewId || `${review.doctorId}-${review.scanId}`} className="card">
+                <h3 style={{ color: '#4f46e5', marginBottom: 12 }}>Doctor {review.doctorId}</h3>
+                <div className="layout-2col" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+                  <div>
+                    <p className="muted">Condition (Tier 1)</p>
+                    <p>{review.conditionTier1 || '—'}</p>
+                  </div>
+                  <div>
+                    <p className="muted">Confidence</p>
+                    <span className="badge badge-success">{fromApiConfidence(review.confidenceLevel) || '—'}</span>
+                  </div>
+                  <div>
+                    <p className="muted">Clinical Notes</p>
+                    <p>{review.notes || '—'}</p>
+                  </div>
+                </div>
+                {review.status === 'LOCKED' && review.lockedAt && (
+                  <p className="muted" style={{ marginTop: 8 }}>Locked at {new Date(review.lockedAt).toLocaleString()}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {isComplete && (
+          <div className="stack" style={{ marginBottom: 18 }}>
+            <div className="badge badge-warn" style={{ alignSelf: 'flex-start' }}>AI – Assistive Only</div>
+            <div className="card">
               <div className="layout-2col" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
                 <div>
                   <p className="muted">Condition (Tier 1)</p>
-                  <p>{review.condition || '—'}</p>
+                  <p>—</p>
                 </div>
                 <div>
                   <p className="muted">Confidence</p>
-                  <span className="badge badge-success">{review.confidence || '—'}</span>
+                  <span className="badge badge-success">—</span>
                 </div>
                 <div>
-                  <p className="muted">Clinical Notes</p>
-                  <p>{review.notes || '—'}</p>
+                  <p className="muted">Analysis</p>
+                  <p>{ai?.outputText || 'Unavailable'}</p>
                 </div>
               </div>
-              {review.status === 'Locked' && review.updatedAt && (
-                <p className="muted" style={{ marginTop: 8 }}>Locked at {new Date(review.updatedAt).toLocaleString()}</p>
-              )}
             </div>
-          ))}
-        </div>
+          </div>
+        )}
 
-        <div className="stack" style={{ marginBottom: 18 }}>
-          <div className="badge badge-warn" style={{ alignSelf: 'flex-start' }}>AI – Assistive Only</div>
+        {isComplete && (
+          <div className="card" style={{ marginBottom: 18 }}>
+            <h2 className="section-title">Agreement Summary</h2>
+            <p>{final?.agreementSummary || 'Pending'}</p>
+          </div>
+        )}
+
+        {isComplete && (
           <div className="card">
-            <div className="layout-2col" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
-              <div>
-                <p className="muted">Condition (Tier 1)</p>
-                <p>{aiResult?.condition || 'Pending until all locked'}</p>
-              </div>
-              <div>
-                <p className="muted">Confidence</p>
-                <span className="badge badge-success">{aiResult?.confidence || 'Pending'}</span>
-              </div>
-              <div>
-                <p className="muted">Analysis</p>
-                <p>{aiResult?.notes || 'Runs after all reviews are locked.'}</p>
+            <h2 className="section-title">Final Result</h2>
+            <div className="center">
+              <div className={final?.result === 'MATCH' ? 'badge badge-success' : 'badge badge-warn'} style={{ padding: '18px 26px', fontSize: 24 }}>
+                {final?.result || 'Pending'}
               </div>
             </div>
           </div>
-        </div>
-
-        <div className="card" style={{ marginBottom: 18 }}>
-          <h2 className="section-title">Agreement Summary</h2>
-          <p>{agreementSummary}</p>
-        </div>
-
-        <div className="card">
-          <h2 className="section-title">Final Result</h2>
-          <div className="center">
-            <div className={finalResult === 'Match' ? 'badge badge-success' : 'badge badge-warn'} style={{ padding: '18px 26px', fontSize: 24 }}>
-              {finalResult || 'Pending'}
-            </div>
-          </div>
-        </div>
+        )}
       </main>
     </div>
   );
